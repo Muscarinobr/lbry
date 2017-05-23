@@ -25,7 +25,7 @@ at anytime.
   
 ### Fixed
   * Fix race condition in publish that resulted in claims being rejected when making many publishes concurrently
-  *
+  * Allow claim_show to be used without specifying name
 
 ### Deprecated
   *
