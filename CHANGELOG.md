@@ -9,8 +9,8 @@ at anytime.
 
 ## [Unreleased]
 ### Added
-  *
-  *
+  * Handle *uris in `resolve`
+  * Support positional args in lbrynet-cli
 
 ### Changed
   *
