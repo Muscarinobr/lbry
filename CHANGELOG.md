@@ -9,7 +9,7 @@ at anytime.
 
 ## [Unreleased]
 ### Added
-  *
+  * Add `dht_status` parameter to `status` to include bandwidth and peer info
   *
 
 ### Changed
