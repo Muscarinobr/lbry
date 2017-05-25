@@ -50,7 +50,7 @@ def main():
 
     method = arguments[0]
     try:
-        params = parse_params(arguments[1:])
+        args, kwargs = parse_params(arguments[1:])
     except InvalidParameters as e:
         print_error(e.message)
         return 1
@@ -58,22 +58,21 @@ def main():
     # TODO: check if port is bound. Error if its not
 
     if method in ['--help', '-h', 'help']:
-        if len(params) == 0:
+        if len(args) == 0 and len(kwargs) == 0:
             print_help(api)
-        elif 'command' not in params:
-            print_error(
-                'To get help on a specific command, use `{} help command=COMMAND_NAME`'.format(
-                    os.path.basename(sys.argv[0]))
-            )
+        elif 'command' in kwargs:
+            print_help_for_command(api, kwargs['command'])
+        elif len(args) == 1:
+            print_help_for_command(api, args[0])
         else:
-            print_help_for_command(api, params['command'])
-
+            print_error('To get help on a specific command, use `{} help COMMAND_NAME`'.format(
+                os.path.basename(sys.argv[0])))
     elif method not in api.commands():
         print_error("'" + method + "' is not a valid command.")
 
     else:
         try:
-            result = api.call(method, params)
+            result = api.call(method, *args, **kwargs)
             if isinstance(result, basestring):
                 # printing the undumped string is prettier
                 print result
@@ -103,32 +102,40 @@ def main():
             return 1
 
 
-def parse_params(params):
-    if len(params) > 1:
-        return get_params_from_kwargs(params)
-    elif len(params) == 1:
-        try:
-            return json.loads(params[0])
-        except ValueError:
-            return get_params_from_kwargs(params)
-    else:
-        return {}
-
-
 class InvalidParameters(Exception):
     pass
 
 
-def get_params_from_kwargs(params):
+def parse_params(params):
     params_for_return = {}
-    for i in params:
+
+    kw_start = None
+    for i, arg in enumerate(params):
+        if "=" in arg:
+            kw_start = i
+            break
+
+    if kw_start is not None:
+        args, kwargs = params[:kw_start], params[kw_start:]
+    else:
+        args = params
+        kwargs = []
+
+    args_tup = ()
+    kwargs_dict = {}
+
+    for arg in args:
+        args_tup += (guess_type(arg), )
+
+    for kwarg in kwargs:
         try:
-            eq_pos = i.index('=')
+            eq_pos = kwarg.index('=')
         except ValueError:
-            raise InvalidParameters('{} is not in <key>=<value> format'.format(i))
-        k, v = i[:eq_pos], i[eq_pos + 1:]
-        params_for_return[k] = guess_type(v)
-    return params_for_return
+            raise InvalidParameters('{} is not in <key>=<value> format'.format(kwarg))
+        k, v = kwarg[:eq_pos], kwarg[eq_pos + 1:]
+        kwargs_dict[k] = guess_type(v)
+
+    return args_tup, kwargs_dict
 
 
 def guess_type(x):
