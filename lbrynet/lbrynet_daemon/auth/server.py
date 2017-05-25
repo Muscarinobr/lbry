@@ -310,34 +310,39 @@ class AuthJSONRPCServer(AuthorizedBase):
             )
             return server.NOT_DONE_YET
 
-        if args == EMPTY_PARAMS or args == []:
-            args_dict = {}
+        if isinstance(args, list):
+            if args == [{}]:
+                args_list = []
+                args_dict = {}
+            else:
+                if args and isinstance(args[0], dict):
+                    args_dict = args[0]
+                    args_list = args[1:]
+                else:
+                    args_list = args
+                    args_dict = {}
         elif isinstance(args, dict):
+            if "__args" in args:
+                args_list = args.pop("__args")
+            else:
+                args_list = []
             args_dict = args
-        elif len(args) == 1 and isinstance(args[0], dict):
-            # TODO: this is for backwards compatibility. Remove this once API and UI are updated
-            # TODO: also delete EMPTY_PARAMS then
-            args_dict = args[0]
         else:
-            # d = defer.maybeDeferred(function, *args)  # if we want to support positional args too
-            raise ValueError('Args must be a dict')
+            raise Exception("Unknown argument format")
 
-        params_error, erroneous_params = self._check_params(function, args_dict)
-        if params_error is not None:
-            params_error_message = '{} for {} command: {}'.format(
-                params_error, function_name, ', '.join(erroneous_params)
-            )
-            log.warning(params_error_message)
+        try:
+            _args, _kwargs = self._check_params(function, args_list, args_dict)
+        except Exception as params_error:
+            log.warning(params_error.message)
             self._render_error(
-                JSONRPCError(params_error_message, code=JSONRPCError.CODE_INVALID_PARAMS),
+                JSONRPCError(params_error.message, code=JSONRPCError.CODE_INVALID_PARAMS),
                 request, id_
             )
             return server.NOT_DONE_YET
-
         if is_queued:
             d_lock = self._call_lock.get(function_name, False)
             if not d_lock:
-                d = defer.maybeDeferred(function, **args_dict)
+                d = defer.maybeDeferred(function, *_args, **_kwargs)
                 self._call_lock[function_name] = finished_deferred
 
                 def _del_lock(*args):
@@ -352,9 +357,9 @@ class AuthJSONRPCServer(AuthorizedBase):
                 log.info("queued %s", function_name)
                 d = d_lock
                 d.addBoth(lambda _: log.info("running %s from queue", function_name))
-                d.addCallback(lambda _: defer.maybeDeferred(function, **args_dict))
+                d.addCallback(lambda _: defer.maybeDeferred(function, *_args, **_kwargs))
         else:
-            d = defer.maybeDeferred(function, **args_dict)
+            d = defer.maybeDeferred(function, *_args, **_kwargs)
 
         # finished_deferred will callback when the request is finished
         # and errback if something went wrong. If the errback is
@@ -375,26 +380,55 @@ class AuthJSONRPCServer(AuthorizedBase):
         return server.NOT_DONE_YET
 
     @staticmethod
-    def _check_params(function, args_dict):
-        argspec = inspect.getargspec(undecorated(function))
-        num_optional_params = 0 if argspec.defaults is None else len(argspec.defaults)
-        missing_required_params = [
-            required_param
-            for required_param in argspec.args[1:-num_optional_params]
-            if required_param not in args_dict
-            ]
-        if len(missing_required_params):
-            return 'Missing required parameters', missing_required_params
+    def _check_params(fn, args_list=None, args_dict=None):
+        args_list = args_list or []
+        args_dict = args_dict or {}
+        argspec = inspect.getargspec(undecorated(fn))
+        start_pos = 0 if not inspect.ismethod(fn) else 1
+        arg_names = [] if argspec.args is None else argspec.args[start_pos:]
+        defaults = []
+        default_cnt = 0 if argspec.defaults is None else len(argspec.defaults)
+        required = len(arg_names) - default_cnt
 
-        extraneous_params = [] if argspec.keywords is not None else [
-            extra_param
-            for extra_param in args_dict
-            if extra_param not in argspec.args[1:]
-            ]
-        if len(extraneous_params):
-            return 'Extraneous parameters', extraneous_params
+        for key, arg in zip(arg_names[-default_cnt:], argspec.defaults or []):
+            defaults.append((key, arg))
 
-        return None, None
+        args = ()
+        kwargs = {}
+
+        for i, arg in enumerate(args_list):
+            if i < len(arg_names):
+                arg_name = arg_names[i]
+                if arg_name in args_dict:
+                    name = fn.__name__
+                    raise Exception("Argument \"%s\" given to %s an arg and a kwarg" % (arg_name,
+                                                                                        name))
+            elif argspec.varargs is None:
+                raise Exception("Too many arguments given")
+            args += (arg, )
+
+        for i, req_key in enumerate(arg_names):
+            if len(args) + len(kwargs) == i:
+                if req_key in args_dict:
+                    kwargs.update({req_key: args_dict.pop(req_key)})
+                elif req_key in [x[0] for x in defaults]:
+                    v = [x[1] for x in defaults if x[0] == req_key][0]
+                    kwargs.update({req_key: v})
+
+        missing_required = [n for n in arg_names[len(args):] if n not in [i[0] for i in defaults]]
+
+        if missing_required:
+            raise Exception("%s missing required arguments: %s" % (fn.__name__, missing_required))
+
+        if args_dict is not None:
+            if argspec.varargs is not None and argspec.varargs in args_dict:
+                args += tuple(args_dict.pop(argspec.varargs))
+            if argspec.keywords is not None and argspec.keywords in args_dict:
+                kwargs.update(args_dict.pop(argspec.keywords))
+        if args_dict:
+            raise Exception("Extraneous params given to %s: %s" % (fn.__name__, args_dict))
+
+        return args, kwargs
 
     def _register_user_session(self, session_id):
         """
