@@ -35,4 +35,7 @@ class DaemonCLITests(unittest.TestCase):
             't': True,
             'f': False,
         }
-        self.assertDictEqual(test_r, DaemonCLI.get_params_from_kwargs(test_params))
+        args_tup, kw_dict = DaemonCLI.parse_params(test_params)
+        self.assertDictEqual(test_r, kw_dict)
+        self.assertTupleEqual(args_tup, ())
+

@@ -798,27 +798,32 @@ class Wallet(object):
         defer.returnValue(results)
 
     @defer.inlineCallbacks
-    def resolve_uri(self, uri, check_cache=True):
-        cached_claim = None
-        if check_cache:
-            cached_claim = yield self._storage.get_cached_claim_for_uri(uri, check_cache)
-        if cached_claim:
-            log.debug("Using cached results for %s", uri)
-            resolve_results = cached_claim
-        else:
-            log.info("Resolving %s", uri)
-            resolve_results = yield self._get_value_for_uri(uri)
+    def resolve(self, check_cache=True, *uris):
+        result = {}
+        needed = []
+        for uri in uris:
+            cached_claim = None
+            if check_cache:
+                cached_claim = yield self._storage.get_cached_claim_for_uri(uri, check_cache)
+            if cached_claim:
+                log.debug("Using cached results for %s", uri)
+                result[uri] = yield self._handle_claim_result(cached_claim, update_caches=False)
+            else:
+                log.info("Resolving %s", uri)
+                needed.append(uri)
 
-        claim_id = None
-        if resolve_results and 'claim' in resolve_results:
-            claim_id = resolve_results['claim']['claim_id']
-        certificate_id = None
-        if resolve_results and 'certificate' in resolve_results:
-            certificate_id = resolve_results['certificate']['claim_id']
+        batch_results = yield self._get_values_for_uris(*uris)
 
-        result = yield self._handle_claim_result(resolve_results, cached_claim is None)
-        if claim_id:
-            yield self._storage.save_claim_to_uri_cache(uri, claim_id, certificate_id)
+        for uri, resolve_results in batch_results.iteritems():
+            claim_id = None
+            if resolve_results and 'claim' in resolve_results:
+                claim_id = resolve_results['claim']['claim_id']
+            certificate_id = None
+            if resolve_results and 'certificate' in resolve_results:
+                certificate_id = resolve_results['certificate']['claim_id']
+            result[uri] = yield self._handle_claim_result(resolve_results, update_caches=True)
+            if claim_id:
+                yield self._storage.save_claim_to_uri_cache(uri, claim_id, certificate_id)
 
         defer.returnValue(result)
 
@@ -1373,6 +1378,9 @@ class LBRYumWallet(Wallet):
         if not uri:
             raise Exception("No uri given")
         return self._run_cmd_as_defer_to_thread('getvalueforuri', uri)
+
+    def _get_values_for_uris(self, *uris):
+        return self._run_cmd_as_defer_to_thread('getvaluesforuris', False, *uris)
 
     def _claim_certificate(self, name, amount):
         return self._run_cmd_as_defer_succeed('claimcertificate', name, amount)
