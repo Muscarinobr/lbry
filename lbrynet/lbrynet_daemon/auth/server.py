@@ -110,21 +110,26 @@ def jsonrpc_dumps_pretty(obj, **kwargs):
                       separators=(',', ': '), **kwargs) + "\n"
 
 
-class AuthorizedBase(object):
-    def __init__(self):
-        self.authorized_functions = []
-        self.callable_methods = {}
-        self._call_lock = {}
-        self._queued_methods = []
+class JSONRPCServerType(type):
+    def __new__(cls, name, bases, newattrs):
+        klass = type.__new__(cls, name, bases, newattrs)
+        klass.callable_methods = {}
+        klass.authorized_functions = []
+        klass.queued_methods = []
 
-        for methodname in dir(self):
+        for methodname in dir(klass):
             if methodname.startswith("jsonrpc_"):
-                method = getattr(self, methodname)
-                self.callable_methods.update({methodname.split("jsonrpc_")[1]: method})
+                method = getattr(klass, methodname)
+                klass.callable_methods.update({methodname.split("jsonrpc_")[1]: method})
                 if hasattr(method, '_auth_required'):
-                    self.authorized_functions.append(methodname.split("jsonrpc_")[1])
+                    klass.authorized_functions.append(methodname.split("jsonrpc_")[1])
                 if hasattr(method, '_queued'):
-                    self._queued_methods.append(methodname.split("jsonrpc_")[1])
+                    klass.queued_methods.append(methodname.split("jsonrpc_")[1])
+        return klass
+
+
+class AuthorizedBase(object):
+    __metaclass__ = JSONRPCServerType
 
     @staticmethod
     def auth_required(f):
@@ -164,7 +169,7 @@ class AuthJSONRPCServer(AuthorizedBase):
     isLeaf = True
 
     def __init__(self, use_authentication=None):
-        AuthorizedBase.__init__(self)
+        self._call_lock = {}
         self._use_authentication = (
             use_authentication if use_authentication is not None else conf.settings['use_auth_http']
         )
@@ -263,7 +268,7 @@ class AuthJSONRPCServer(AuthorizedBase):
         id_ = None
         try:
             function_name = parsed.get('method')
-            is_queued = function_name in self._queued_methods
+            is_queued = function_name in self.queued_methods
             args = parsed.get('params', {})
             id_ = parsed.get('id', None)
             token = parsed.pop('hmac', None)
@@ -331,7 +336,7 @@ class AuthJSONRPCServer(AuthorizedBase):
             raise Exception("Unknown argument format")
 
         try:
-            _args, _kwargs = self._check_params(function, args_list, args_dict)
+            _args, _kwargs = utils.check_params(function, args_list, args_dict)
         except Exception as params_error:
             log.warning(params_error.message)
             self._render_error(
@@ -359,7 +364,7 @@ class AuthJSONRPCServer(AuthorizedBase):
                 d.addBoth(lambda _: log.info("running %s from queue", function_name))
                 d.addCallback(lambda _: defer.maybeDeferred(function, *_args, **_kwargs))
         else:
-            d = defer.maybeDeferred(function, *_args, **_kwargs)
+            d = defer.maybeDeferred(function, self, *_args, **_kwargs)
 
         # finished_deferred will callback when the request is finished
         # and errback if something went wrong. If the errback is
