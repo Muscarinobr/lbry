@@ -7,7 +7,7 @@ import colorama
 from lbrynet import conf
 from lbrynet.core import utils
 from lbrynet.lbrynet_daemon.auth.client import JSONRPCException, LBRYAPIClient
-from lbrynet.lbrynet_daemon.Daemon import LOADING_WALLET_CODE
+from lbrynet.lbrynet_daemon.Daemon import LOADING_WALLET_CODE, Daemon
 from jsonrpc.common import RPCError
 from urllib2 import URLError, HTTPError
 from httplib import UNAUTHORIZED
@@ -49,8 +49,26 @@ def main():
         return 1
 
     method = arguments[0]
+
+    if method in api.commands():
+        fn = Daemon.callable_methods.get(method)
+    else:
+        return
+
     try:
-        args, kwargs = parse_params(arguments[1:])
+        kw_pos = None
+        for i, arg in enumerate(arguments[1:]):
+            if "=" in arg and len(arg.split('=')) == 2:
+                kw_pos = i + 1
+                break
+        if kw_pos is not None:
+            arg_list = arguments[1:kw_pos]
+            kw_dict = {x.split('=')[0]: x.split('=')[1] for x in arguments[kw_pos:]}
+        else:
+            arg_list, kw_dict = arguments[1:], {}
+
+        args, kwargs = utils.check_params(fn, arg_list, kw_dict)
+
     except InvalidParameters as e:
         print_error(e.message)
         return 1
@@ -69,7 +87,6 @@ def main():
                 os.path.basename(sys.argv[0])))
     elif method not in api.commands():
         print_error("'" + method + "' is not a valid command.")
-
     else:
         try:
             result = api.call(method, *args, **kwargs)
@@ -104,55 +121,6 @@ def main():
 
 class InvalidParameters(Exception):
     pass
-
-
-def parse_params(params):
-    params_for_return = {}
-
-    kw_start = None
-    for i, arg in enumerate(params):
-        if "=" in arg:
-            kw_start = i
-            break
-
-    if kw_start is not None:
-        args, kwargs = params[:kw_start], params[kw_start:]
-    else:
-        args = params
-        kwargs = []
-
-    args_tup = ()
-    kwargs_dict = {}
-
-    for arg in args:
-        args_tup += (guess_type(arg), )
-
-    for kwarg in kwargs:
-        try:
-            eq_pos = kwarg.index('=')
-        except ValueError:
-            raise InvalidParameters('{} is not in <key>=<value> format'.format(kwarg))
-        k, v = kwarg[:eq_pos], kwarg[eq_pos + 1:]
-        kwargs_dict[k] = guess_type(v)
-
-    return args_tup, kwargs_dict
-
-
-def guess_type(x):
-    if x in ('true', 'True', 'TRUE'):
-        return True
-    if x in ('false', 'False', 'FALSE'):
-        return False
-    if '.' in x:
-        try:
-            return float(x)
-        except ValueError:
-            # not a float
-            pass
-    try:
-        return int(x)
-    except ValueError:
-        return x
 
 
 def print_help_suggestion():

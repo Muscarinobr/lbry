@@ -123,52 +123,80 @@ def json_dumps_pretty(obj, **kwargs):
     return json.dumps(obj, sort_keys=True, indent=2, separators=(',', ': '), **kwargs)
 
 
-def check_params(fn, args_list=None, args_dict=None):
+def check_params(fn, args_list=None, args_dict=None, convert_type=False):
     args_list = args_list or []
     args_dict = args_dict or {}
     argspec = inspect.getargspec(undecorated(fn))
     start_pos = 0 if not inspect.ismethod(fn) else 1
     arg_names = [] if argspec.args is None else argspec.args[start_pos:]
-    defaults = []
     default_cnt = 0 if argspec.defaults is None else len(argspec.defaults)
-    required = len(arg_names) - default_cnt
 
-    for key, arg in zip(arg_names[-default_cnt:], argspec.defaults or []):
-        defaults.append((key, arg))
+    default_arg_list = []
+    undefined = object()
 
-    args = ()
-    kwargs = {}
+    first_arg_with_default = len(arg_names) - default_cnt
 
-    for i, arg in enumerate(args_list):
-        if i < len(arg_names):
-            arg_name = arg_names[i]
-            if arg_name in args_dict:
-                name = fn.__name__
-                raise Exception("Argument \"%s\" given to %s an arg and a kwarg" % (arg_name,
-                                                                                    name))
-        elif argspec.varargs is None:
-            raise Exception("Too many arguments given")
-        args += (arg,)
+    for i, key in enumerate(arg_names):
+        if argspec.defaults is not None and i >= first_arg_with_default:
+            default_arg_list.append((key, argspec.defaults[i - first_arg_with_default]))
+        else:
+            default_arg_list.append((key, undefined))
 
-    for i, req_key in enumerate(arg_names):
-        if len(args) + len(kwargs) == i:
-            if req_key in args_dict:
-                kwargs.update({req_key: args_dict.pop(req_key)})
-            elif req_key in [x[0] for x in defaults]:
-                v = [x[1] for x in defaults if x[0] == req_key][0]
-                kwargs.update({req_key: v})
+    has_vargs = argspec.varargs is not None
+    has_vkwargs = argspec.keywords is not None
 
-    missing_required = [n for n in arg_names[len(args):] if n not in [i[0] for i in defaults]]
+    ordered_arg_list = []
+    tmp_args_list = args_list
+    tmp_args_list.reverse()
 
-    if missing_required:
-        raise Exception("%s missing required arguments: %s" % (fn.__name__, missing_required))
+    for i, (arg_name, default) in enumerate(default_arg_list):
+        if arg_name in args_dict:
+            ordered_arg_list.append((arg_name, args_dict.pop(arg_name)))
+        elif tmp_args_list:
+            ordered_arg_list.append((arg_name, tmp_args_list.pop()))
+        else:
+            ordered_arg_list.append((arg_name, default))
 
-    if args_dict is not None:
-        if argspec.varargs is not None and argspec.varargs in args_dict:
-            args += tuple(args_dict.pop(argspec.varargs))
-        if argspec.keywords is not None and argspec.keywords in args_dict:
-            kwargs.update(args_dict.pop(argspec.keywords))
-    if args_dict:
-        raise Exception("Extraneous params given to %s: %s" % (fn.__name__, args_dict))
+    tmp_args_list.reverse()
+    args_list = tmp_args_list
 
-    return args, kwargs
+    if args_list and has_vargs:
+        for arg in args_list:
+            ordered_arg_list.append(("*", arg))
+    elif has_vargs and argspec.varargs in args_dict:
+        for arg in tuple(args_dict.pop(argspec.varargs)):
+            ordered_arg_list.append(("*", arg))
+    elif args_list and not has_vargs:
+        raise Exception("Too many args: %s" % str(args_list))
+    final_args = ()
+    for arg_name, arg in ordered_arg_list:
+        if arg is undefined:
+            raise Exception("Missing arg: %s" % arg_name)
+        final_args += (arg if not convert_type else guess_type(arg), )
+    if args_dict and not has_vkwargs:
+        raise Exception("Too many kwargs: %s" % str(args_dict))
+    if convert_type:
+        for key in args_dict:
+            args_dict[key] = guess_type(args_dict[key])
+    return final_args, args_dict
+
+
+def guess_type(x):
+    if not isinstance(x, (unicode, str)):
+        return x
+    if x in ('true', 'True', 'TRUE'):
+        return True
+    if x in ('false', 'False', 'FALSE'):
+        return False
+    if x in ('none', 'None', 'null', 'NULL', 'NONE'):
+        return None
+    if '.' in x:
+        try:
+            return float(x)
+        except ValueError:
+            return x
+    else:
+        try:
+            return int(x)
+        except ValueError:
+            return x
